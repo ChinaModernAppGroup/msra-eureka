@@ -13,6 +13,7 @@
   language governing permissions and limitations under the License.
   
   Updated by Ping Xiong on May/15/2022.
+  Updated by Ping Xiong on Jul/3/2022, using global var for polling signal.
 */
 
 'use strict';
@@ -31,12 +32,13 @@ fetch.Promise = Bluebird;
 
 
 // Setup a polling signal for audit.
-var fs = require('fs');
-const msraeurekaOnPollingSignal = '/var/tmp/msraeurekaOnPolling';
+//var fs = require('fs');
+//const msraeurekaOnPollingSignal = '/var/tmp/msraeurekaOnPolling';
+global.msraeurekaOnPolling = [];
 
 
 //const pollInterval = 10000; // Interval for polling Registry registry.
-var stopPolling = false;
+//var stopPolling = false;
 
 /**
  * A dynamic config processor for managing LTM pools.
@@ -65,21 +67,6 @@ msraeurekaConfigProcessor.prototype.onStart = function (success) {
         eventChannel: this.eventChannel,
         restHelper: this.restHelper
     });
-
-    // Clear the polling signal for audit.
-    try {
-        fs.access(msraeurekaOnPollingSignal, fs.constants.F_OK, function (err) {
-            if (err) {
-                logger.fine("msraeureka audit OnStart, the polling signal is off. ", err.message);
-            } else {
-                logger.fine("msra eureka audit onStart: ConfigProcessor started, clear the signal.");
-                fs.unlinkSync(msraeurekaOnPollingSignal);
-            }
-        });
-    } catch(err) {
-        logger.fine("msraeureka: OnStart, hits error while check pooling signal. ", err.message);
-    }
-
 
     success();
 };
@@ -142,6 +129,8 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
     const inputDataCenterName = inputProperties.dataCenterInfo.value;
     var pollInterval = dataProperties.pollInterval.value * 1000;
 
+    const serviceID = inputProperties.ipAddr.value + ":" + inputProperties.port.value; // For polling signal and audit.
+
     // Set the polling interval
     if (pollInterval) {
         if (pollInterval < 10000) {
@@ -154,17 +143,20 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
     }
     
     // Setup the polling signal for audit
-    try {
-        logger.fine("msraeureka: onPost, will set the polling signal. ");
-        fs.writeFile(msraeurekaOnPollingSignal, '');
-    } catch (error) {
-        logger.fine("msraeureka: onPost, hit error while set polling signal: ", error.message);
+    if (global.msraeurekaOnPolling.includes(serviceID)) {
+        return logger.fine("msra: onPost, already has an instance polling the same serviceID, please check it out: " + serviceID);
+    } else { 
+        global.msraeurekaOnPolling.push(serviceID);
+        logger.fine("msra onPost: set msraeurekaOnpolling signal: ", global.msraeurekaOnPolling);
     }
 
 
-    logger.fine("MSRA: onPost, Input properties accepted, change to BOUND status, start to poll Registry.");
+    logger.fine(
+      "MSRA: onPost, Input properties accepted, change to BOUND status, start to poll Registry for: " +
+        serviceID
+    );
 
-    stopPolling = false;
+    //stopPolling = false;
 
     configTaskUtil.sendPatchToBoundState(configTaskState, 
             oThis.getUri().href, restOperation.getBasicAuthorization());
@@ -257,6 +249,7 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
                                 return;
                             });
                     } else {
+                        // Assume only 1 instance for each service for now, can be extended to multiple instances later.
                         // do health check for BIG-IP application, deregister if app down
                         // Use tmsh to check vs status of BIG-IP application instead of restful API
                         // Start with check the exisitence of the given pool
@@ -277,7 +270,6 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
                                     .catch(err => console.error(err));
                             } else {
                                 logger.fine("MSRA: onPost, he virtual server is not available, will deregister from eureka server: " + inputApp);
-
                                 // deregister an instance from eureka
                                 deregisterInstance (instanceUrl);
                             }
@@ -304,16 +296,18 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
         }, pollInterval);
 
         // Stop polling while undepllyment, and deregister the app from eureka server
-        if (stopPolling) {
-            process.nextTick(() => {
-                clearTimeout(pollRegistry);
-                logger.fine("MSRA: onPost/stopping, Stop polling registry ...");
-            });
-            // deregister the app from eureka server
-            setTimeout (function () {
-                // deregister an instance from eureka
-                deregisterInstance (instanceUrl);
-            }, 2000);
+        if (global.msraeurekaOnPolling.includes(serviceID)) {
+          logger.fine("msra: onPost, keep polling registry for: " + serviceID);
+        } else {
+          process.nextTick(() => {
+            clearTimeout(pollRegistry);
+            logger.fine("MSRA: onPost/stopping, Stop polling registry for: " + serviceID);
+          });
+          // deregister the app from eureka server
+          setTimeout(function () {
+            // deregister an instance from eureka
+            deregisterInstance(instanceUrl);
+          }, 2000);
         }
     })();
 };
@@ -325,81 +319,101 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
  * @param restOperation - originating rest operation that triggered this processor
  */
 msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
-    var configTaskState,
-        blockState;
-    var oThis = this;
+  var configTaskState, blockState;
+  var oThis = this;
 
-    logger.fine("MSRA: onDelete, msraeurekaConfigProcessor.prototype.onDelete");
+  logger.fine("MSRA: onDelete, msraeurekaConfigProcessor.prototype.onDelete");
 
-    var inputProperties;
-    try {
-        configTaskState = configTaskUtil.getAndValidateConfigTaskState(restOperation);
-        blockState = configTaskState.block;
-        inputProperties = blockUtil.getMapFromPropertiesAndValidate(blockState.inputProperties,
-            ["eurekaEndpoint", "servicePath", "app"]);
-    } catch (ex) {
-        restOperation.fail(ex);
-        return;
-    }
-    this.completeRequest(restOperation, this.wellKnownPorts.STATUS_ACCEPTED);
+  var inputProperties;
+  try {
+    configTaskState =
+      configTaskUtil.getAndValidateConfigTaskState(restOperation);
+    blockState = configTaskState.block;
+    inputProperties = blockUtil.getMapFromPropertiesAndValidate(
+      blockState.inputProperties,
+      ["eurekaEndpoint", "servicePath", "app", "ipAddr", "port"]
+    );
+  } catch (ex) {
+    restOperation.fail(ex);
+    return;
+  }
+  this.completeRequest(restOperation, this.wellKnownPorts.STATUS_ACCEPTED);
 
-    // Generic URI components, minus the 'path'
-    var uri = this.restHelper.buildUri({
-        protocol: this.wellKnownPorts.DEFAULT_HTTP_SCHEME,
-        port: this.wellKnownPorts.DEFAULT_JAVA_SERVER_PORT,
-        hostname: "localhost"
+  // Generic URI components, minus the 'path'
+  var uri = this.restHelper.buildUri({
+    protocol: this.wellKnownPorts.DEFAULT_HTTP_SCHEME,
+    port: this.wellKnownPorts.DEFAULT_JAVA_SERVER_PORT,
+    hostname: "localhost",
+  });
+
+  // In case user requested configuration to deployed to remote
+  // device, setup remote hostname, HTTPS port and device group name
+  // to be used for identified requests
+
+  //Accept input proterties, set the status to BOUND.
+
+  const inputEndPoint = inputProperties.eurekaEndpoint.value;
+  const inputEndPointTail = inputEndPoint.toString().split(":")[1];
+  const inputEndPointAddr = inputEndPointTail.toString().slice(2);
+  const inputEndPointPort = inputEndPoint.toString().split(":")[2];
+  const inputServicePath = inputProperties.servicePath.value;
+  const inputApp = inputProperties.app.value;
+
+  const serviceID =
+    inputProperties.ipAddr.value + ":" + inputProperties.port.value; // For polling signal and audit.
+
+  //inputEndPoint = inputEndPoint.toString().split(",");
+  logger.fine("MSRA: onDelete, registry endpoints: " + inputEndPoint);
+
+  // connect to eureka registry to retrieve end points.
+  const absoluteUrl = inputEndPoint + inputServicePath + inputApp;
+
+  // check the eureka server for the application
+
+  fetch(absoluteUrl, { headers: { Accept: "application/json" } })
+    .then((res) => res.json())
+    .then(
+      function (jsondata) {
+        //let nodeAddress = []; // don't care the nodeAddress anymore.
+        if (jsondata.message === "Not Found") {
+          logger.fine(
+            "MSRA: onDelete, App is not found in eureka server, will do nothing."
+          );
+        } else {
+          logger.fine(
+            "MSRA: onDelete, App  found in eureka server, will deregister it."
+          );
+          // do deregister in onPost loop ...
+        }
+      },
+      function (err) {
+        logger.fine(
+          "MSRA: onDelete, Fail to retrieve eureka app due to: ",
+          err.message
+        );
+      }
+    )
+    .catch(function (error) {
+      logger.fine(
+        "MSRA: onDelete, Fail to retrieve euraka app due to: ",
+        error.message
+      );
     });
 
-    // In case user requested configuration to deployed to remote
-    // device, setup remote hostname, HTTPS port and device group name
-    // to be used for identified requests
+  // change the state to UNBOUND
 
-    //Accept input proterties, set the status to BOUND.
+  configTaskUtil.sendPatchToUnBoundState(
+    configTaskState,
+    oThis.getUri().href,
+    restOperation.getBasicAuthorization()
+  );
 
-    const inputEndPoint = inputProperties.eurekaEndpoint.value;
-    const inputEndPointTail = inputEndPoint.toString().split(":")[1];
-    const inputEndPointAddr = inputEndPointTail.toString().slice(2);
-    const inputEndPointPort = inputEndPoint.toString().split(":")[2];
-    const inputServicePath = inputProperties.servicePath.value;
-    const inputApp = inputProperties.app.value;
-
-
-    //inputEndPoint = inputEndPoint.toString().split(","); 
-    logger.fine("MSRA: onDelete, registry endpoints: " + inputEndPoint);
-
-    // connect to eureka registry to retrieve end points.
-    const absoluteUrl = inputEndPoint + inputServicePath + inputApp;
-
-    // check the eureka server for the application
-
-    fetch(absoluteUrl, { headers: {'Accept': 'application/json'} })
-        .then(res => res.json())
-        .then(function(jsondata) {
-            //let nodeAddress = []; // don't care the nodeAddress anymore.
-            if (jsondata.message === 'Not Found') {
-                logger.fine("MSRA: onDelete, App is not found in eureka server, will do nothing.");
-            } else {
-                logger.fine("MSRA: onDelete, App  found in eureka server, will deregister it.");
-                // do deregister in onPost loop ...
-            }
-        }, function (err) {
-            logger.fine("MSRA: onDelete, Fail to retrieve eureka app due to: ", err.message);
-        }).catch(function (error) {
-            logger.fine("MSRA: onDelete, Fail to retrieve euraka app due to: ", error.message);
-        });
-    
-    // change the state to UNBOUND
-    
-    configTaskUtil.sendPatchToUnBoundState(configTaskState, 
-                oThis.getUri().href, restOperation.getBasicAuthorization());
-    
-    // Stop polling registry while undeploy ??
-    process.nextTick(() => {
-        stopPolling = true;
-        logger.fine("MSRA: onDelete/stopping, Stop polling registry ...");
-    });
-    //stopPollingEvent.emit('stopPollingRegistry');
-    logger.fine("MSRA: onDelete, Stop polling Registry while ondelete action.");
+  // Stop polling registry while undeploy ??
+  // Delete the polling signal
+  let signalIndex = global.msraeurekaOnPolling.indexOf(serviceID);
+  global.msraeurekaOnPolling.splice(signalIndex, 1);
+  //stopPollingEvent.emit('stopPollingRegistry');
+  logger.fine("MSRA: onDelete, Stop polling Registry while ondelete action.");
 };
 
 module.exports = msraeurekaConfigProcessor;
