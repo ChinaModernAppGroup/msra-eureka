@@ -24,7 +24,7 @@
     {
       "id": "app",
       "type": "STRING",
-      "value": "msra-service166-onf5",
+      "value": "msra-demo-app",
       "metaData": {
         "description": "Application name to be registered",
         "displayName": "Application Name",
@@ -34,9 +34,9 @@
     {
       "id": "hostName",
       "type": "STRING",
-      "value": "bigipvs166",
+      "value": "msra-service166-onf5",
       "metaData": {
-        "description": "Host Name to be registered",
+        "description": "Host Name to be registered, prefer to use the virtual server name in BIGIP",
         "displayName": "Host Name",
         "isRequired": true
       }

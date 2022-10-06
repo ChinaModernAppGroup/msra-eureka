@@ -14,6 +14,12 @@
   
   Updated by Ping Xiong on May/15/2022.
   Updated by Ping Xiong on Jul/3/2022, using global var for polling signal.
+  Updated by Ping Xiong on Oct/06/2022, modify the polling signal into a json object to keep more information.
+  let blockInstance = {
+    name: "instanceName", // a block instance of the iapplx config
+    state: "polling", // can be "polling" for normal running state; "update" to modify the iapplx config
+    serviceId: hostName:app, what's the ID for eureka?
+  }
 */
 
 'use strict';
@@ -80,236 +86,523 @@ msraeurekaConfigProcessor.prototype.onStart = function (success) {
  * @param restOperation - originating rest operation that triggered this processor
  */
 msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
-    var configTaskState,
-        blockState,
-        oThis = this;
-    logger.fine("MSRA: onPost, msraeurekaConfigProcessor.prototype.onPost");
+  var configTaskState,
+    blockState,
+    oThis = this;
+  logger.fine("MSRA: onPost, msraeurekaConfigProcessor.prototype.onPost");
 
-    var inputProperties;
-    var dataProperties;
-    try {
-        configTaskState = configTaskUtil.getAndValidateConfigTaskState(restOperation);
-        blockState = configTaskState.block;
-        logger.fine("MSRA: onPost, inputProperties ", blockState.inputProperties);
-        logger.fine("MSRA: onPost, dataProperties ", blockState.dataProperties);
-        inputProperties = blockUtil.getMapFromPropertiesAndValidate(
-            blockState.inputProperties,
-            ["eurekaEndpoint", "servicePath", "app", "hostName", "ipAddr", "port", "statusPageUrl", "vipAddress", "dataCenterInfo"]
-        );
-        dataProperties = blockUtil.getMapFromPropertiesAndValidate(
-            blockState.dataProperties,
-            ["pollInterval"]
-        );
-
-    } catch (ex) {
-        restOperation.fail(ex);
-        return;
-    }
-
-    // Mark that the request meets all validity checks and tell the originator it was accepted.
-    this.completeRequest(restOperation, this.wellKnownPorts.STATUS_ACCEPTED);
-
-    // Generic URI components, minus the 'path'
-    var uri = this.restHelper.buildUri({
-        protocol: this.wellKnownPorts.DEFAULT_HTTP_SCHEME,
-        port: this.wellKnownPorts.DEFAULT_JAVA_SERVER_PORT,
-        hostname : "localhost"
-    });
-
-    //Accept input proterties, set the status to BOUND.
-
-    const inputEndPoint = inputProperties.eurekaEndpoint.value;
-    const inputServicePath = inputProperties.servicePath.value;
-    const inputApp = inputProperties.app.value;
-    const inputHostName = inputProperties.hostName.value;
-    const inputIpAddr = inputProperties.ipAddr.value;
-    const inputPort = inputProperties.port.value;
-    const inputStatusPageUrl = inputProperties.statusPageUrl.value;
-    const inputVipAddrss = inputProperties.vipAddress.value;
-    const inputDataCenterName = inputProperties.dataCenterInfo.value;
-    var pollInterval = dataProperties.pollInterval.value * 1000;
-
-    const serviceID = inputProperties.ipAddr.value + ":" + inputProperties.port.value; // For polling signal and audit.
-
-    // Set the polling interval
-    if (pollInterval) {
-        if (pollInterval < 10000) {
-            logger.fine("MSRA: onPost, pollInternal is too short, will set it to 10s ", pollInterval);
-            pollInterval = 10000;
-        }
-    } else {
-        logger.fine("MSRA: onPost, pollInternal is not set, will set it to 30s ", pollInterval);
-        pollInterval = 30000;
-    }
-    
-    // Setup the polling signal for audit
-    if (global.msraeurekaOnPolling.includes(serviceID)) {
-        return logger.fine("msra: onPost, already has an instance polling the same serviceID, please check it out: " + serviceID);
-    } else { 
-        global.msraeurekaOnPolling.push(serviceID);
-        logger.fine("msra onPost: set msraeurekaOnpolling signal: ", global.msraeurekaOnPolling);
-    }
-
-
-    logger.fine(
-      "MSRA: onPost, Input properties accepted, change to BOUND status, start to poll Registry for: " +
-        serviceID
+  var instanceName;
+  var inputProperties;
+  var dataProperties;
+  try {
+    configTaskState =
+      configTaskUtil.getAndValidateConfigTaskState(restOperation);
+    blockState = configTaskState.block;
+    logger.fine("MSRA: onPost, inputProperties ", blockState.inputProperties);
+    logger.fine("MSRA: onPost, dataProperties ", blockState.dataProperties);
+    logger.fine("MSRA: onPost, instanceName ", blockState.name);
+    inputProperties = blockUtil.getMapFromPropertiesAndValidate(
+      blockState.inputProperties,
+      [
+        "eurekaEndpoint",
+        "servicePath",
+        "app",
+        "hostName",// virtual server name in BIGIP
+        "ipAddr",
+        "port",
+        "statusPageUrl",
+        "vipAddress",
+        "dataCenterInfo",
+      ]
     );
+    dataProperties = blockUtil.getMapFromPropertiesAndValidate(
+      blockState.dataProperties,
+      ["pollInterval"]
+    );
+    instanceName = blockState.name;
+  } catch (ex) {
+    restOperation.fail(ex);
+    return;
+  }
 
-    //stopPolling = false;
+  // Mark that the request meets all validity checks and tell the originator it was accepted.
+  this.completeRequest(restOperation, this.wellKnownPorts.STATUS_ACCEPTED);
 
-    configTaskUtil.sendPatchToBoundState(configTaskState, 
-            oThis.getUri().href, restOperation.getBasicAuthorization());
+  // Generic URI components, minus the 'path'
+  var uri = this.restHelper.buildUri({
+    protocol: this.wellKnownPorts.DEFAULT_HTTP_SCHEME,
+    port: this.wellKnownPorts.DEFAULT_JAVA_SERVER_PORT,
+    hostname: "localhost",
+  });
 
-    // A internal service to register application to eureka server.
-       
-    logger.fine("MSRA: onPost, registry endpoints: " + inputEndPoint);
+  //Accept input proterties, set the status to BOUND.
 
-    // Prepare the instance body
-    const instanceBody = {
-        "instance":{
-            "app":inputApp,
-            "hostName":inputHostName,
-            "ipAddr":inputIpAddr,
-            "statusPageUrl":inputStatusPageUrl,
-            "port":{
-                "$":inputPort,
-                "@enabled":"true"
-            },
-            "vipAddress":inputVipAddrss,
-            "dataCenterInfo":{
-                "@Class":"com.netflix.appinfo.InstanceInfo$DefaultDataCenterInfo",
-                "name":inputDataCenterName
-            },
-            "status":"UP"
+  const inputEndPoint = inputProperties.eurekaEndpoint.value;
+  const inputServicePath = inputProperties.servicePath.value;
+  const inputApp = inputProperties.app.value;
+  const inputHostName = inputProperties.hostName.value;
+  const inputVirtualServer = inputProperties.hostName.value;
+  const inputIpAddr = inputProperties.ipAddr.value;
+  const inputPort = inputProperties.port.value;
+  const inputStatusPageUrl = inputProperties.statusPageUrl.value;
+  const inputVipAddrss = inputProperties.vipAddress.value;
+  const inputDataCenterName = inputProperties.dataCenterInfo.value;
+  var pollInterval = dataProperties.pollInterval.value * 1000;
+
+  // For service instance UUID
+  const serviceId =
+    inputProperties.hostName.value +
+    ":" +
+    inputProperties.app.value;
+
+  // Set the polling interval
+  if (pollInterval) {
+    if (pollInterval < 10000) {
+      logger.fine(
+        "MSRA: onPost, " +
+          instanceName +
+          " pollInternal is too short, will set it to 10s ",
+        pollInterval
+      );
+      pollInterval = 10000;
+    }
+  } else {
+    logger.fine(
+      "MSRA: onPost, " +
+        instanceName +
+        " pollInternal is not set, will set it to 30s ",
+      pollInterval
+    );
+    pollInterval = 30000;
+  }
+
+  // Setup the polling signal for audit and update
+  // update on Oct/06/2022, using json object for polling signal, by Ping Xiong.
+
+  let blockInstance = {
+    name: instanceName,
+    serviceId: serviceId,
+    state: "polling",
+  };
+
+  let signalIndex = global.msraeurekaOnPolling.findIndex(
+    (instance) => instance.name === instanceName
+  );
+
+  if (signalIndex !== -1) {
+    // Already has the instance, change the state into "update"
+    global.msraeurekaOnPolling.splice(signalIndex, 1);
+    blockInstance.state = "update";
+  }
+  logger.fine(
+    "MSRA: onPost, " + instanceName + " blockInstance:",
+    blockInstance
+  );
+
+  // Setup a signal to identify existing polling loop
+  var existingPollingLoop = false;
+
+  // check if there is an conflict serviceId running in configuration
+  if (
+    global.msraeurekaOnPolling.some(
+      (instance) => instance.serviceId === serviceId
+    )
+  ) {
+    logger.fine(
+      "MSRA: onPost, " +
+        instanceName +
+        " already has an instance polling the same serviceId, change BLOCK to ERROR: ",
+      serviceId
+    );
+    try {
+      throw new Error(
+        "onPost: serviceId conflict: " +
+          serviceId +
+          " , will set the BLOCK to ERROR state"
+      );
+    } catch (error) {
+      configTaskUtil.sendPatchToErrorState(
+        configTaskState,
+        error,
+        oThis.getUri().href,
+        restOperation.getBasicAuthorization()
+      );
+    }
+    return;
+  } else {
+    global.msraeurekaOnPolling.push(blockInstance);
+    logger.fine(
+      "MSRA onPost: " + instanceName + " set msraeurekaOnpolling signal: ",
+      global.msraeurekaOnPolling
+    );
+  }
+
+  logger.fine(
+    "MSRA: onPost, " +
+      instanceName +
+      " Input properties accepted, change to BOUND status, start to poll Registry for: ",
+      serviceId
+  );
+
+  configTaskUtil.sendPatchToBoundState(
+    configTaskState,
+    oThis.getUri().href,
+    restOperation.getBasicAuthorization()
+  );
+
+  // A internal service to register application to eureka server.
+
+  logger.fine(
+    "MSRA: onPost, " + instanceName + " registry endpoints: " + inputEndPoint
+  );
+
+  // Prepare the instance body
+  const instanceBody = {
+    instance: {
+      app: inputApp,
+      hostName: inputHostName,
+      ipAddr: inputIpAddr,
+      statusPageUrl: inputStatusPageUrl,
+      port: {
+        $: inputPort,
+        "@enabled": "true",
+      },
+      vipAddress: inputVipAddrss,
+      dataCenterInfo: {
+        "@Class": "com.netflix.appinfo.InstanceInfo$DefaultDataCenterInfo",
+        name: inputDataCenterName,
+      },
+      status: "UP",
+    },
+  };
+
+  //deregister a instance
+  function deregisterInstance(instance) {
+    // deregister an instance from eureka
+    fetch(instance, { method: "DELETE" })
+      .then(function (res) {
+        if (res.ok) {
+          // res.status >= 200 && res.status < 300
+          logger.fine(
+            "MSRA: onPost, Deregister the instance: " + inputHostName,
+            res.statusText
+          );
+        } else {
+          logger.fine(
+            "MSRA: onPost, Failed to deregister the instance: " + inputHostName,
+            res.statusText
+          );
         }
-    };
+      })
+      .catch((err) => console.error(err));
+  }
 
-    //deregister a instance
-    function deregisterInstance (instance) {
-        // deregister an instance from eureka
-        fetch(instance, { method: 'DELETE'})
-            .then(function (res) {
-                if (res.ok) { // res.status >= 200 && res.status < 300
-                    logger.fine("MSRA: onPost, Deregister the instance: "+ inputHostName, res.statusText);
-                } else {
-                    logger.fine("MSRA: onPost, Failed to deregister the instance: "+ inputHostName, res.statusText);
-                }
-            })
-            .catch(err => console.error(err));
+  // connect to eureka registry to retrieve end points.
+  //const absoluteUrl = inputEndPoint + inputServicePath + inputApp;
+  const instanceUrl =
+    inputEndPoint + inputServicePath + inputApp + "/" + inputHostName;
+
+  (function schedule() {
+    var pollRegistry = setTimeout(function () {
+
+      // If signal state is "update", change it into "polling" for new polling loop
+      if (
+        global.msraeurekaOnPolling.some(
+          (instance) => instance.name === instanceName
+        )
+      ) {
+        let signalIndex = global.msraeurekaOnPolling.findIndex(
+          (instance) => instance.name === instanceName
+        );
+        if (global.msraeurekaOnPolling[signalIndex].state === "update") {
+          if (existingPollingLoop) {
+            logger.fine(
+              "MSRA: onPost/polling, " +
+                instanceName +
+                " update config, existing polling loop."
+            );
+          } else {
+            //logger.fine("MSRA: onPost/polling, " + instanceName + " update config, a new polling loop.");
+            global.msraeurekaOnPolling[signalIndex].state = "polling";
+            logger.fine(
+              "MSRA: onPost/polling, " +
+                instanceName +
+                " update the signal.state into polling for new polling loop: ",
+              global.msraeurekaOnPolling[signalIndex]
+            );
+          }
+        }
+        // update the existingPollingLoop to true
+        existingPollingLoop = true;
+      } else {
+        // Non-exist instance, will NOT proceed to poll the registry
+        // deregister an service from eureka
+        deregisterInstance(instanceUrl);
+        return logger.fine(
+          "MSRA: onPost/polling, " +
+            instanceName +
+            " Stop polling registry for: " +
+            serviceId
+        );
+      }
+
+      // polling the registry for the instance ...
+
+      fetch(instanceUrl, { headers: { Accept: "application/json" } })
+        .then((res) => res.json())
+        .then(
+          function (jsondata) {
+            //let nodeAddress = []; // don't care the nodeAddress anymore.
+            if (jsondata.message === "Not Found") {
+              logger.fine(
+                "MSRA: onPost, " +
+                  instanceName +
+                  " Service not found, will check the status of vs, then decide register into eureka server or not."
+              );
+
+              // check the status of the vs in F5
+              // Use tmsh to check vs status of BIG-IP application instead of restful API
+              // Start with check the exisitence of the given pool
+              mytmsh
+                .executeCommand(
+                  "tmsh -a show ltm virtual " +
+                    inputVirtualServer +
+                    " field-fmt"
+                )
+                .then(function (res) {
+                  logger.fine(
+                    "MSRA: onPost, " +
+                      instanceName +
+                      " Found the virtual server in F5, will check the availability: " +
+                      inputVirtualServer
+                  );
+                  if (res.indexOf("status.availability-state available") >= 0) {
+                    logger.fine(
+                      "MSRA: onPost, " +
+                        instanceName +
+                        " the virtual server in F5 is available, will register it to eureka server: " +
+                        inputVirtualServer
+                    );
+                    // register an instance to eureka
+                    const registerUrl =
+                      inputEndPoint + inputServicePath + inputApp;
+                    fetch(registerUrl, {
+                      method: "POST",
+                      body: JSON.stringify(instanceBody),
+                      headers: { "Content-Type": "application/json" },
+                    })
+                      .then(function (res) {
+                        if (res.ok) {
+                          // res.status >= 200 && res.status < 300
+                          logger.fine(
+                            "MSRA: onPost, " +
+                              instanceName +
+                              " Registered the instance: " +
+                              inputHostName,
+                            res.statusText
+                          );
+                        } else {
+                          logger.fine(
+                            "MSRA: onPost, " +
+                              instanceName +
+                              " Failed to register the instance: " +
+                              inputHostName,
+                            res.statusText
+                          );
+                        }
+                      })
+                      .catch((err) =>
+                        logger.fine(
+                          "MSRA: onPost, " +
+                            instanceName +
+                            " failed to register into eureka: ",
+                          err.message
+                        )
+                      );
+                  }
+                })
+                // Error handling
+                .catch(function (error) {
+                  if (error.message.indexOf("was not found") >= 0) {
+                    logger.fine(
+                      "MSRA: onPost, " +
+                        instanceName +
+                        " virtual server not found: " +
+                        inputVirtualServer
+                    );
+                    return;
+                  }
+                  logger.fine(
+                    "MSRA: onPost, " +
+                      instanceName +
+                      " Fail to check status of the virtual server: " +
+                      error.message
+                  );
+                  return;
+                });
+            } else {
+              // do health check for BIG-IP application, deregister if app down
+              // Use tmsh to check vs status of BIG-IP application instead of restful API
+              // Start with check the exisitence of the given pool
+              mytmsh
+                .executeCommand(
+                  "tmsh -a show ltm virtual " +
+                    inputVirtualServer +
+                    " field-fmt"
+                )
+                .then(function (res) {
+                  logger.fine(
+                    "MSRA: onPost, " +
+                      instanceName +
+                      " Found the virtual server in F5, will check the availability: " +
+                      inputVirtualServer
+                  );
+                  if (res.indexOf("status.availability-state available") >= 0) {
+                    logger.fine(
+                      "MSRA: onPost, " +
+                        instanceName +
+                        " the virtual server in F5 is available, will send heartbeat to eureka server: " +
+                        inputVirtualServer
+                    );
+
+                    // send a heartbeat to eureka
+                    fetch(instanceUrl, { method: "PUT" })
+                      .then(function (res) {
+                        if (res.ok) {
+                          // res.status >= 200 && res.status < 300
+                          logger.fine(
+                            "MSRA: onPost, " +
+                              instanceName +
+                              " Sent heartbeat to the instance: " +
+                              inputHostName,
+                            res.statusText
+                          );
+                        } else {
+                          logger.fine(
+                            "MSRA: onPost, " +
+                              instanceName +
+                              " Failed to sent heartbeat to the instance: " +
+                              inputHostName,
+                            res.statusText
+                          );
+                        }
+                      })
+                      .catch((err) => console.error(err));
+                  } else {
+                    logger.fine(
+                      "MSRA: onPost, " +
+                        instanceName +
+                        " the virtual server is not available, will deregister from eureka server: " +
+                        inputVirtualServer
+                    );
+                    // deregister an instance from eureka
+                    deregisterInstance(instanceUrl);
+                  }
+                })
+                // Error handling
+                .catch(function (error) {
+                  if (error.message.indexOf("was not found") >= 0) {
+                    logger.fine(
+                      "MSRA: onPost, " +
+                        instanceName +
+                        " virtual server not found, will deregister from eureka server: " +
+                        inputVirtualServer
+                    );
+
+                    // deregister an instance from eureka
+                    deregisterInstance(instanceUrl);
+                    return;
+                  }
+                  logger.fine(
+                    "MSRA: onPost, " +
+                      instanceName +
+                      " Fail to check status of the virtual server: ",
+                    error.message
+                  );
+                  return;
+                });
+            }
+          },
+          function (err) {
+            logger.fine(
+              "MSRA: onPost, " +
+                instanceName +
+                " Fail to retrieve eureka app due to: ",
+              err.message
+            );
+          }
+        )
+        .catch(function (error) {
+          logger.fine(
+            "MSRA: onPost, " +
+              instanceName +
+              " Fail to retrieve euraka app due to: ",
+            error.message
+          );
+        })
+        .done(function () {
+          logger.fine(
+            "MSRA: onPost/polling, " +
+              instanceName +
+              " finish a polling action."
+          );
+          schedule();
+        });
+    }, pollInterval);
+
+    // Stop polling while undeployment and update config, then deregister the app from eureka server
+
+    let stopPolling = true;
+
+    if (
+      global.msraeurekaOnPolling.some(
+        (instance) => instance.name === instanceName
+      )
+    ) {
+      let signalIndex = global.msraeurekaOnPolling.findIndex(
+        (instance) => instance.name === instanceName
+      );
+      if (global.msraeurekaOnPolling[signalIndex].state === "polling") {
+        logger.fine(
+          "MSRA: onPost, " + instanceName + " keep polling registry for: ",
+          serviceId
+        );
+        stopPolling = false;
+      } else {
+        if (existingPollingLoop) {
+          logger.fine(
+            "MSRA: onPost, " +
+              instanceName +
+              " update config, will terminate existing polling loop."
+          );
+        } else {
+          logger.fine(
+            "MSRA: onPost, " +
+              instanceName +
+              " update config, will trigger a new polling loop."
+          );
+          stopPolling = false;
+        }
+      }
     }
 
-
-    // connect to eureka registry to retrieve end points.
-    const absoluteUrl = inputEndPoint + inputServicePath + inputApp;
-    const instanceUrl = inputEndPoint + inputServicePath + inputApp + "/" + inputHostName;
-
-    (function schedule() {
-        var pollRegistry = setTimeout(function () {
-            fetch(absoluteUrl, { headers: {'Accept': 'application/json'} })
-                .then(res => res.json())
-                .then(function(jsondata) {
-                    //let nodeAddress = []; // don't care the nodeAddress anymore.
-                    if (jsondata.message === 'Not Found') {
-                        logger.fine("MSRA: onPost, Service not found, will check the status of vs, then decide register into eureka server or not.");
-
-                        // check the status of the vs in F5
-
-                        // Use tmsh to check vs status of BIG-IP application instead of restful API
-
-                        // Start with check the exisitence of the given pool
-                        mytmsh.executeCommand("tmsh -a show ltm virtual " + inputApp +' field-fmt').then(function (res) {
-                            logger.fine("MSRA: onPost, Found the virtual server in F5, will check the availability: " + inputApp);
-                            if (res.indexOf('status.availability-state available') >= 0) {
-                                logger.fine("MSRA: onPost, the virtual server in F5 is available, will register it to eureka server: " + inputApp);
-                                // register an instance to eureka
-                                const registerUrl = inputEndPoint + inputServicePath + inputApp;
-                                fetch(registerUrl, {
-                                        method: 'POST',
-                                        body:    JSON.stringify(instanceBody),
-                                        headers: { 'Content-Type': 'application/json' }
-                                    })
-                                    .then(function (res) {
-                                        if (res.ok) { // res.status >= 200 && res.status < 300
-                                            logger.fine("MSRA: onPost, Registered the instance: "+ inputHostName, res.statusText);
-                                        } else {
-                                            logger.fine("MSRA: onPost, Failed to register the instance: "+ inputHostName, res.statusText);
-                                        }
-                                    })
-                                    .catch(err => logger.fine("MSRA: onPost, failed to register into eureka: ",err.message));
-                            } 
-                        })
-                            // Error handling
-                            .catch(function (error) {
-                                if (error.message.indexOf('was not found') >= 0) {
-                                    logger.fine("MSRA: onPost, virtual server not found: " + inputApp);
-                                    return;
-                                }
-                                logger.fine("MSRA: onPost, Fail to check status of the virtual server: " + error.message);
-                                return;
-                            });
-                    } else {
-                        // Assume only 1 instance for each service for now, can be extended to multiple instances later.
-                        // do health check for BIG-IP application, deregister if app down
-                        // Use tmsh to check vs status of BIG-IP application instead of restful API
-                        // Start with check the exisitence of the given pool
-                        mytmsh.executeCommand("tmsh -a show ltm virtual " + inputApp +' field-fmt').then(function (res) {
-                            logger.fine("MSRA: onPost, Found the virtual server in F5, will check the availability: " + inputApp);
-                            if (res.indexOf('status.availability-state available') >= 0) {
-                                logger.fine("MSRA: onPost, the virtual server in F5 is available, will send heartbeat to eureka server: " + inputApp);
-
-                                // send a heartbeat to eureka
-                                fetch(instanceUrl, { method: 'PUT'})
-                                    .then(function (res) {
-                                        if (res.ok) { // res.status >= 200 && res.status < 300
-                                            logger.fine("MSRA: onPost, Sent heartbeat to the instance: " + inputHostName, res.statusText);
-                                        } else {
-                                            logger.fine("MSRA: onPost, Failed to sent heartbeat to the instance: "+ inputHostName, res.statusText);
-                                        }
-                                    })
-                                    .catch(err => console.error(err));
-                            } else {
-                                logger.fine("MSRA: onPost, he virtual server is not available, will deregister from eureka server: " + inputApp);
-                                // deregister an instance from eureka
-                                deregisterInstance (instanceUrl);
-                            }
-                        })
-                            // Error handling
-                            .catch(function (error) {
-                                if (error.message.indexOf('was not found') >= 0) {
-                                    logger.fine("MSRA: onPost, virtual server not found, will deregister from eureka server: " + inputApp);
-
-                                    // deregister an instance from eureka
-                                    deregisterInstance (instanceUrl);
-                                    return;
-                                }
-                                logger.fine("MSRA: onPost, Fail to check status of the virtual server: " + error.message);
-                                return;
-                            });
-                    }
-                }, function (err) {
-                    logger.fine("MSRA: onPost, Fail to retrieve eureka app due to: ", err.message);
-                }).catch(function (error) {
-                    logger.fine("MSRA: onPost, Fail to retrieve euraka app due to: ", error.message);
-                });
-            schedule();
-        }, pollInterval);
-
-        // Stop polling while undepllyment, and deregister the app from eureka server
-        if (global.msraeurekaOnPolling.includes(serviceID)) {
-          logger.fine("msra: onPost, keep polling registry for: " + serviceID);
-        } else {
-          process.nextTick(() => {
-            clearTimeout(pollRegistry);
-            logger.fine("MSRA: onPost/stopping, Stop polling registry for: " + serviceID);
-          });
-          // deregister the app from eureka server
-          setTimeout(function () {
-            // deregister an instance from eureka
-            deregisterInstance(instanceUrl);
-          }, 2000);
-        }
-    })();
+    if (stopPolling) {
+      process.nextTick(() => {
+        clearTimeout(pollRegistry);
+        logger.fine(
+          "MSRA: onPost/stopping, " +
+            instanceName +
+            " Stop polling registry for: " +
+            serviceId
+        );
+      });
+      // deregister the app from eureka server
+      setTimeout(function () {
+        // deregister an instance from eureka
+        deregisterInstance(instanceUrl);
+      }, 2000);
+    }
+  })();
 };
 
 
@@ -322,8 +615,13 @@ msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
   var configTaskState, blockState;
   var oThis = this;
 
-  logger.fine("MSRA: onDelete, msraeurekaConfigProcessor.prototype.onDelete");
+  logger.fine(
+    "MSRA: onDelete, " +
+      instanceName +
+      " msraeurekaConfigProcessor.prototype.onDelete"
+  );
 
+  var instanceName;
   var inputProperties;
   try {
     configTaskState =
@@ -333,6 +631,7 @@ msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
       blockState.inputProperties,
       ["eurekaEndpoint", "servicePath", "app", "ipAddr", "port"]
     );
+    instanceName = blockState.name;
   } catch (ex) {
     restOperation.fail(ex);
     return;
@@ -351,7 +650,7 @@ msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
   // to be used for identified requests
 
   //Accept input proterties, set the status to BOUND.
-
+  /*
   const inputEndPoint = inputProperties.eurekaEndpoint.value;
   const inputEndPointTail = inputEndPoint.toString().split(":")[1];
   const inputEndPointAddr = inputEndPointTail.toString().slice(2);
@@ -359,7 +658,7 @@ msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
   const inputServicePath = inputProperties.servicePath.value;
   const inputApp = inputProperties.app.value;
 
-  const serviceID =
+  const serviceId =
     inputProperties.ipAddr.value + ":" + inputProperties.port.value; // For polling signal and audit.
 
   //inputEndPoint = inputEndPoint.toString().split(",");
@@ -400,6 +699,8 @@ msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
       );
     });
 
+    */
+  
   // change the state to UNBOUND
 
   configTaskUtil.sendPatchToUnBoundState(
@@ -410,10 +711,16 @@ msraeurekaConfigProcessor.prototype.onDelete = function (restOperation) {
 
   // Stop polling registry while undeploy ??
   // Delete the polling signal
-  let signalIndex = global.msraeurekaOnPolling.indexOf(serviceID);
+  let signalIndex = global.msraeurekaOnPolling.findIndex(
+    (instance) => instance.name === instanceName
+  );
   global.msraeurekaOnPolling.splice(signalIndex, 1);
   //stopPollingEvent.emit('stopPollingRegistry');
-  logger.fine("MSRA: onDelete, Stop polling Registry while ondelete action.");
+  logger.fine(
+    "MSRA: onDelete, " +
+      instanceName +
+      " Stop polling Registry while ondelete action."
+  );
 };
 
 module.exports = msraeurekaConfigProcessor;
