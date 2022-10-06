@@ -14,6 +14,12 @@
 
   Updated by Ping Xiong on May/13/2022
   Updated by Ping Xiong on Jul/3/2022, using global var for polling signal.
+  Updated by Ping Xiong on Oct/06/2022, modify the polling signal into a json object to keep more information.
+  let blockInstance = {
+    name: "instanceName", // a block instance of the iapplx config
+    state: "polling", // can be "polling" for normal running state; "update" to modify the iapplx config
+    serviceId: ip:port:app, what's the ID for eureka?
+  }
 */
 
 'use strict';
@@ -76,56 +82,78 @@ msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost = function (restOpera
 
     setTimeout(function () {
         try {
-            if (!auditTaskState ) {
-                throw new Error("AUDIT: Audit task state must exist ");
-            }
-            /*
+          if (!auditTaskState) {
+            throw new Error("AUDIT: Audit task state must exist ");
+          }
+          /*
             logger.fine(getLogHeader() + "Incoming properties: " +
                 this.restHelper.jsonPrinter(auditTaskState.currentInputProperties));
             */
-            
-            var blockInputProperties =
-              blockUtil.getMapFromPropertiesAndValidate(
-                auditTaskState.currentInputProperties,
-                ["ipAddr", "port"]
+
+          var blockInputProperties = blockUtil.getMapFromPropertiesAndValidate(
+            auditTaskState.currentInputProperties,
+            [
+              "app",
+              "hostName" // virtual server name in BIGIP
+            ]
+          );
+
+          /*
+          const serviceID =
+            blockInputProperties.ipAddr.value +
+            ":" +
+            blockInputProperties.port.value; // For polling signal and audit.
+          */
+          // For service UUID
+          const serviceId =
+            blockInputProperties.hostName.value +
+            ":" +
+            blockInputProperties.app.value;
+
+          // Check the polling state, trigger ConfigProcessor if needed.
+          // Move the signal checking here
+          logger.fine(
+            "msra eureka Audit: msraeurekaOnpolling: ",
+            global.msraeurekaOnPolling
+          );
+          logger.fine("msra eureka Audit: msraeureka serviceName: ", serviceId);
+          if (
+            global.msraeurekaOnPolling.some(
+              (instance) => instance.serviceId === serviceId
+            )
+          ) {
+            logger.fine(
+              "msra eureka audit onPost: ConfigProcessor is on polling state, no need to fire an onPost.",
+              serviceId
+            );
+          } else {
+            logger.fine(
+              "msra eureka audit onPost: ConfigProcessor is NOT on polling state, will trigger ConfigProcessor onPost.",
+              serviceId
+            );
+            try {
+              var poolNameObject = getObjectByID(
+                "ipAddr",
+                auditTaskState.currentInputProperties
               );
-            
-            const serviceID = blockInputProperties.ipAddr.value + ":" + blockInputProperties.port.value; // For polling signal and audit.
-            
-            // Check the polling state, trigger ConfigProcessor if needed.
-            // Move the signal checking here
-            logger.fine("msra eureka Audit: msraeurekaOnpolling: ", global.msraeurekaOnPolling);
-            logger.fine("msra eureka Audit: msraeureka serviceName: ", serviceID);
-            if (global.msraeurekaOnPolling.includes(serviceID)) {
+              poolNameObject.value = null;
+              oThis.finishOperation(restOperation, auditTaskState);
               logger.fine(
-                "msra eureka audit onPost: ConfigProcessor is on polling state, no need to fire an onPost."
+                "msra eureka audit onPost: trigger ConfigProcessor onPost ",
+                serviceId
               );
-            } else {
+            } catch (err) {
               logger.fine(
-                "msra eureka audit onPost: ConfigProcessor is NOT on polling state, will trigger ConfigProcessor onPost."
+                "msra eureka audit onPost: Failed to send out restOperation. ",
+                err.message
               );
-              try {
-                var poolNameObject = getObjectByID(
-                  "ipAddr",
-                  auditTaskState.currentInputProperties
-                );
-                poolNameObject.value = null;
-                oThis.finishOperation(restOperation, auditTaskState);
-                logger.fine(
-                  "msra eureka audit onPost: trigger ConfigProcessor onPost "
-                );
-              } catch (err) {
-                logger.fine(
-                  "msra eureka audit onPost: Failed to send out restOperation. ",
-                  err.message
-                );
-              }
             }
+          }
         } catch (ex) {
             logger.fine("msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost caught generic exception " + ex);
             restOperation.fail(ex);
         }
-    }, 1000);
+    }, 2000);
 };
 
 var getObjectByID = function ( key, array) {
