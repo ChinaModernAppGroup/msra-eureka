@@ -80,7 +80,7 @@ msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost = function (restOpera
     var oThis = this;
     var auditTaskState = restOperation.getBody();
 
-    setTimeout(function () {
+    //setTimeout(function () {
         try {
           if (!auditTaskState) {
             throw new Error("AUDIT: Audit task state must exist ");
@@ -113,22 +113,28 @@ msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost = function (restOpera
           // Check the polling state, trigger ConfigProcessor if needed.
           // Move the signal checking here
           logger.fine(
-            "msra eureka Audit: msraeurekaOnpolling: ",
+            getLogHeader() + "msra eureka Audit: msraeurekaOnpolling: ",
             global.msraeurekaOnPolling
           );
-          logger.fine("msra eureka Audit: msraeureka serviceName: ", serviceId);
+          logger.fine(
+            getLogHeader() + "msra eureka Audit: msraeureka serviceName: ",
+            serviceId
+          );
           if (
             global.msraeurekaOnPolling.some(
               (instance) => instance.serviceId === serviceId
             )
           ) {
             logger.fine(
-              "msra eureka audit onPost: ConfigProcessor is on polling state, no need to fire an onPost.",
+              getLogHeader() +
+                "msra eureka audit onPost: ConfigProcessor is on polling state, no need to fire an onPost.",
               serviceId
             );
+            oThis.finishOperation(restOperation, auditTaskState);
           } else {
             logger.fine(
-              "msra eureka audit onPost: ConfigProcessor is NOT on polling state, will trigger ConfigProcessor onPost.",
+              getLogHeader() +
+                "msra eureka audit onPost: ConfigProcessor is NOT on polling state, will trigger ConfigProcessor onPost.",
               serviceId
             );
             try {
@@ -139,21 +145,27 @@ msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost = function (restOpera
               poolNameObject.value = null;
               oThis.finishOperation(restOperation, auditTaskState);
               logger.fine(
-                "msra eureka audit onPost: trigger ConfigProcessor onPost ",
+                getLogHeader() +
+                  "msra eureka audit onPost: trigger ConfigProcessor onPost ",
                 serviceId
               );
             } catch (err) {
               logger.fine(
-                "msra eureka audit onPost: Failed to send out restOperation. ",
+                getLogHeader() +
+                  "msra eureka audit onPost: Failed to send out restOperation. ",
                 err.message
               );
             }
           }
         } catch (ex) {
-            logger.fine("msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost caught generic exception " + ex);
+            logger.fine(
+              getLogHeader() +
+                "msraeurekaEnforceConfiguredAuditProcessor.prototype.onPost caught generic exception " +
+                ex
+            );
             restOperation.fail(ex);
         }
-    }, 2000);
+    //}, 2000);
 };
 
 var getObjectByID = function ( key, array) {

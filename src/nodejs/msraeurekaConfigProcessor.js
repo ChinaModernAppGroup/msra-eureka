@@ -357,7 +357,7 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
               logger.fine(
                 "MSRA: onPost, " +
                   instanceName +
-                  " Service not found, will check the status of vs, then decide register into eureka server or not."
+                  " Service not found in Eureka server, will check the status of vs, then decide register into eureka server or not."
               );
 
               // check the status of the vs in F5
@@ -444,6 +444,11 @@ msraeurekaConfigProcessor.prototype.onPost = function (restOperation) {
               // do health check for BIG-IP application, deregister if app down
               // Use tmsh to check vs status of BIG-IP application instead of restful API
               // Start with check the exisitence of the given pool
+              logger.fine(
+                "MSRA: onPost, " +
+                  instanceName +
+                  " Service found in Eureka server, will check the status of vs, then decide register into eureka server or not."
+              );
               mytmsh
                 .executeCommand(
                   "tmsh -a show ltm virtual " +
